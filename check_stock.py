@@ -55,6 +55,7 @@ def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text())
     return {
+        "white_available": False,
         "white_xxs_in_stock": False,
         "black_available": False,
         "black_xxs_in_stock": False,
@@ -172,6 +173,7 @@ def check() -> dict:
 
         swatch_names = get_color_swatch_names(page)
         black_available = any("black" in name for name in swatch_names)
+        white_available = any("white" in name for name in swatch_names)
 
         # Check XXS directly on however the page loaded -- no longer requires
         # finding/clicking a "white" swatch first. The page defaults to white
@@ -187,6 +189,7 @@ def check() -> dict:
         browser.close()
 
         return {
+            "white_available": white_available,
             "white_xxs_in_stock": white_xxs,
             "black_available": black_available,
             "black_xxs_in_stock": black_xxs,
@@ -223,6 +226,9 @@ def main():
     current["blocked_alert_sent"] = False
 
     messages = []
+
+    if current["white_available"] and not previous.get("white_available"):
+        messages.append(f"White just reappeared as a color option! {PRODUCT_URL}")
 
     if current["white_xxs_in_stock"] and not previous.get("white_xxs_in_stock"):
         messages.append(f"White XXS is back in stock! {PRODUCT_URL}")
