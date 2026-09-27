@@ -7,6 +7,13 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch: {}  # lets you click "Run workflow" manually to test
 
+# Prevents two runs from overlapping and racing to push state.json at the
+# same time. If a new run starts while one's still going, it waits its turn
+# instead of colliding with it.
+concurrency:
+  group: stock-check
+  cancel-in-progress: false
+
 # Needed so this workflow can commit the updated state.json back to the repo
 permissions:
   contents: write
@@ -42,4 +49,5 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add state.json
           git diff --staged --quiet || git commit -m "Update stock state"
+          git pull --rebase origin main
           git push
