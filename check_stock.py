@@ -47,10 +47,20 @@ CARRIER_GATEWAYS = {
 }
 
 
+class BlockedError(Exception):
+    """Raised when the page looks like a CAPTCHA/bot-block page instead of the real product page."""
+
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text())
-    return {"white_xxs_in_stock": False, "black_available": False, "black_xxs_in_stock": False}
+    return {
+        "white_available": False,
+        "white_xxs_in_stock": False,
+        "black_available": False,
+        "black_xxs_in_stock": False,
+        "blocked_alert_sent": False,
+    }
 
 
 def save_state(state: dict) -> None:
@@ -149,13 +159,36 @@ def check() -> dict:
         page.goto(PRODUCT_URL, wait_until="networkidle", timeout=45000)
         page.wait_for_timeout(2000)
 
+        title = (page.title() or "").lower()
+        body_text = page.locator("body").inner_text().lower()
+
+        block_signals = [
+            "access denied", "attention required", "captcha",
+            "verify you are human", "unusual traffic", "robot check",
+            "are you a robot", "pardon our interruption",
+        ]
+        if any(signal in title or signal in body_text for signal in block_signals):
+            browser.close()
+            raise BlockedError(f"Page looks like a bot-block/CAPTCHA page (title: '{page.title()}')")
+
         swatch_names = get_color_swatch_names(page)
         black_available = any("black" in name for name in swatch_names)
 
-        # Check white + XXS (white should already be selected by default,
-        # but click it explicitly to be safe)
-        select_color(page, "white")
-        white_xxs = is_size_available(page, TARGET_SIZE)
+        if len(swatch_names) == 0:
+            # No color swatches found at all is suspicious for this page --
+            # either we're blocked in a way the text check above missed, or
+            # the site's structure changed. Either way, don't trust this read.
+            browser.close()
+            raise BlockedError("No color swatches found on the page -- likely blocked or page structure changed")
+
+        # Check both colors the same way: only try to select+check a color if
+        # it's actually showing up as a swatch on the page right now.
+        white_available = any("white" in name for name in swatch_names)
+
+        white_xxs = False
+        if white_available:
+            if select_color(page, "white"):
+                white_xxs = is_size_available(page, TARGET_SIZE)
 
         black_xxs = False
         if black_available:
@@ -165,6 +198,7 @@ def check() -> dict:
         browser.close()
 
         return {
+            "white_available": white_available,
             "white_xxs_in_stock": white_xxs,
             "black_available": black_available,
             "black_xxs_in_stock": black_xxs,
@@ -176,13 +210,34 @@ def main():
 
     try:
         current = check()
+    except BlockedError as e:
+        print(f"Possible block detected: {e}", file=sys.stderr)
+        if not previous.get("blocked_alert_sent"):
+            try:
+                send_text(
+                    "\u26a0\ufe0f Stock checker: Hollister may be blocking the "
+                    "automated check. It'll keep quietly retrying, but you may "
+                    "want to check manually for now."
+                )
+            except Exception as send_err:
+                print(f"Also failed to send the block alert text: {send_err}", file=sys.stderr)
+            previous["blocked_alert_sent"] = True
+            save_state(previous)
+        sys.exit(1)
     except Exception as e:
         print(f"Check failed: {e}", file=sys.stderr)
         # Don't spam texts on every transient failure; just exit non-zero so
         # the GitHub Actions run shows as failed and you can glance at it.
         sys.exit(1)
 
+    # A successful check means we're not blocked (anymore) -- reset the flag
+    # so a future block gets a fresh alert instead of staying silent forever.
+    current["blocked_alert_sent"] = False
+
     messages = []
+
+    if current["white_available"] and not previous.get("white_available"):
+        messages.append(f"White just reappeared as a color option! {PRODUCT_URL}")
 
     if current["white_xxs_in_stock"] and not previous.get("white_xxs_in_stock"):
         messages.append(f"White XXS is back in stock! {PRODUCT_URL}")
